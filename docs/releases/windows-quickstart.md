@@ -1,6 +1,10 @@
 # WorldGen 0.5.0 — Windows x64
 
-Распакуйте архив целиком и откройте `WorldGen.exe`. Установка приложения не нужна. Для работы нужен Microsoft Edge WebView2 Runtime: https://developer.microsoft.com/microsoft-edge/webview2/ . Node.js и Rust нужны только для сборки исходников.
+1. Распакуйте архив целиком в любую папку.
+2. Откройте `WorldGen.exe`.
+3. Дождитесь появления карты и создавайте свой мир.
+
+Установка WorldGen не нужна. Для работы нужен Microsoft Edge WebView2 Runtime: https://developer.microsoft.com/microsoft-edge/webview2/ . Если приложение не запускается из-за отсутствия WebView2, установите Evergreen Runtime для x64 с сайта Microsoft или используйте установщик WorldGen из того же выпуска. Node.js, Rust и исходники для запуска не нужны.
 
 При запуске WorldGen создаёт мир с семенем `Ember-001`. Выберите слой карты, нажмите на участок для просмотра данных или измените параметры и нажмите «Создать мир».
 

@@ -18,6 +18,10 @@
 
 ## Запуск
 
+**[Скачать готовый ZIP для Windows x64](https://github.com/Mikunu/WorldGen/releases/download/v0.5.0/WorldGen_0.5.0_windows-x64.zip)** — распакуйте архив целиком и откройте `WorldGen.exe`. Сборка из исходников не требуется.
+
+Все файлы и описание: **[релиз 0.5.0](https://github.com/Mikunu/WorldGen/releases/tag/v0.5.0)**.
+
 Подготовлены сборки для **Windows x64**. В составе выпуска:
 
 | Файл | Как использовать |
