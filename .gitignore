@@ -1,0 +1,14 @@
+node_modules/
+output/
+*.log
+dist/
+src-tauri/target/
+src-tauri/gen/
+release/
+.pnpm-store/
+.release-check/
+.env
+.env.*
+!.env.example
+*.pdb
+*.tmp
