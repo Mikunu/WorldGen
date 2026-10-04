@@ -1,5 +1,9 @@
 @echo off
 cd /d "%~dp0"
+if exist "release\WorldGen_0.1.0-alpha.1.exe" (
+  start "" "release\WorldGen_0.1.0-alpha.1.exe"
+  exit /b 0
+)
 if exist "release\WorldGen.exe" (
   start "" "release\WorldGen.exe"
   exit /b 0

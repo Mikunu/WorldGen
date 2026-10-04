@@ -5,38 +5,45 @@ import {hydrology,erode} from './hydrology.js';
 import {geologicalAtlas,validateAtlas} from './geological-atlas.js';
 import {rocks,provinceTypes,minerals,hazardTypes} from './geology-catalog.js';
 import {depositModels,depositClasses,resourceInventory} from './deposit-models.js';
+import {normalizeGenerationRules,validateGenerationWorkload} from './generation-rules.js';
+import {effectiveRocks,effectiveDepositModels} from './atlas-rules.js';
+import {validateOcean} from './ocean-validation.js';
 
 export const ALGORITHM_VERSION='geological-atlas-0.4.0';
 export const defaults={seed:'Ember-001',width:192,height:96,radiusKm:6371,plateCount:14,epochs:24,epochMa:5,oceanFraction:0.7,axialTilt:23.4,erosionPasses:2,resourceDensity:1};
 export function validateConfig(input={}) {
-  const c={...defaults,...input};c.seed=String(c.seed);
+  const generationRules=normalizeGenerationRules(input.generationRules);
+  const c={...defaults,...generationRules.world,...input,generationRules};c.seed=String(c.seed);
   for(const [key,min,max] of [['width',24,512],['height',12,256],['radiusKm',1000,20000],['plateCount',3,40],['epochs',1,80],['epochMa',0.1,20],['oceanFraction',0.15,0.95],['axialTilt',0,45],['erosionPasses',0,8],['resourceDensity',0,4]]) {
     if(!Number.isFinite(c[key]) || c[key]<min || c[key]>max) throw new Error(`Недопустимый параметр ${key}: ${c[key]}`);
   }
   for(const key of ['width','height','plateCount','epochs','erosionPasses']) if(!Number.isInteger(c[key]))throw new Error(`${key} должен быть целым.`);
   if(c.width%2)throw new Error('Ширина сетки должна быть чётной для перехода через полюса.');
+  for(const key of Object.keys(generationRules.world))generationRules.world[key]=c[key];
+  validateGenerationWorkload(c);
   return c;
 }
 export function generateWorld(input={},progress) {
   const config=validateConfig(input),grid=makeGrid(config.width,config.height,config.radiusKm);
   progress?.('Формирование коры и движение плит');
   const geology=tectonics(grid,config,progress);
-  progress?.('Сезонный климат и перенос влаги');
+  progress?.('Сезонный океан, климат и перенос влаги');
   let weather=climate(grid,geology.elevation,config),water;
   if(config.erosionPasses) {
     progress?.('Устойчивость пород и эрозия');
     water=hydrology(grid,geology.elevation,weather.runoffMm);
     const initialAtlas=geologicalAtlas(grid,geology,weather,water,config);
-    geology.erosionResistance=Float64Array.from(initialAtlas.surfaceRock,id=>rocks[id].resistance);
+    const rockCatalog=effectiveRocks(config.generationRules);
+    geology.erosionResistance=Float64Array.from(initialAtlas.surfaceRock,id=>rockCatalog[id].resistance);
   }
   for(let pass=0;pass<config.erosionPasses;pass++) {
     progress?.(`Сток и эрозия: ${pass+1}/${config.erosionPasses}`);
-    water=hydrology(grid,geology.elevation,weather.runoffMm);erode(grid,geology.elevation,water,geology.erosionResistance);
+    water=hydrology(grid,geology.elevation,weather.runoffMm);erode(grid,geology.elevation,water,geology.erosionResistance,config);
   }
   if(config.erosionPasses)weather=climate(grid,geology.elevation,config);
   water=hydrology(grid,geology.elevation,weather.runoffMm);
   const atlas=geologicalAtlas(grid,geology,weather,water,config,progress);
-  const world={algorithmVersion:ALGORITHM_VERSION,config,catalogs:{rocks,provinceTypes,minerals,hazardTypes,depositModels,depositClasses},grid:{width:grid.width,height:grid.height,size:grid.size,radiusKm:grid.radiusKm,latitude:grid.latitude,areaKm2:grid.areaKm2},geology,climate:weather,water,atlas};
+  const world={algorithmVersion:ALGORITHM_VERSION,config,catalogs:{rocks:effectiveRocks(config.generationRules),provinceTypes,minerals,hazardTypes,depositModels:effectiveDepositModels(config.generationRules),depositClasses},grid:{width:grid.width,height:grid.height,size:grid.size,radiusKm:grid.radiusKm,latitude:grid.latitude,areaKm2:grid.areaKm2},geology,climate:weather,water,atlas};
   world.summary=summarize(world);world.validation=validateWorld(world);
   if(world.validation.errors.length)throw new Error(world.validation.errors.join('\n'));
   progress?.('Готово');return world;
@@ -67,6 +74,11 @@ export function validateWorld(w) {
   const balanceRelativeError=Math.abs(w.water.inputM3s-w.water.outputM3s)/Math.max(w.water.inputM3s,1);
   if(balanceRelativeError>1e-9)errors.push('Нарушен баланс маршрутизации стока');
   if(w.atlas)errors.push(...validateAtlas(w.atlas,n,w.geology,w.water));
+  if(w.climate.ocean) {
+    const rules=w.config.generationRules?.ocean;
+    errors.push(...validateOcean(w.climate.ocean,w.geology.elevation,rules?{surfaceEnabled:rules.enabled,thermodynamicsEnabled:rules.enabled&&rules.thermodynamicsEnabled,rules}:undefined));
+  }
+  else if(w.config.generationRules?.ocean!==undefined)errors.push('Отсутствуют сохранённые слои океана');
   return {errors,balanceRelativeError,checkedCells:n};
 }
 export function serializeWorld(world) {
@@ -78,7 +90,11 @@ export function explainCell(world,i) {
   if(boundary===1)text.push('Соседние плиты сходятся; модель добавляет поднятие.');
   if(boundary===-1)text.push('Соседние плиты расходятся; модель формирует растяжение.');
   if(boundary===2)text.push('Граница плит с преобладающим сдвигом в принятом приближении.');
-  if(h>1500)text.push(`Высота снижает расчётную температуру примерно на ${(h*0.006).toFixed(1)} °C.`);
+  if(world.config.generationRules?.formulas?.expressions?.['climate.temperature'])text.push('Температура рассчитана по пользовательской формуле.');
+  else if(h>1500)text.push(`Высота снижает расчётную температуру примерно на ${(h*(world.config.generationRules?.climate.lapseRate??0.006)).toFixed(1)} °C.`);
+  const ocean=world.climate.ocean;
+  if(ocean?.enabled&&h<=0)text.push(`Поверхностное течение ${ocean.speedMps[i].toFixed(2)} м/с переносит тепло; температура воды ${ocean.temperatureC[i].toFixed(1)} °C.`);
+  else if(ocean?.enabled&&ocean.coastInfluence[i]>0)text.push(`Океанические течения меняют расчётную температуру воздуха на ${ocean.airTemperatureCorrectionC[i].toFixed(2)} °C.`);
   if(h>0)text.push(`Осадки ${Math.round(rain)} мм/год, температура ${temp.toFixed(1)} °C; сток направлен по водосбору к океану.`);
   if(world.water.lakeDepth[i]>80)text.push('Замкнутая впадина: показана потенциальная глубина до перелива; водный баланс озера пока не моделируется.');
   return text.join(' ');

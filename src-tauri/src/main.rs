@@ -8,14 +8,14 @@ use std::{
 };
 use tauri_plugin_dialog::DialogExt;
 
-const PROJECT_LIMIT: usize = 100 * 1024 * 1024;
+const PROJECT_LIMIT: usize = 200 * 1024 * 1024;
 const RULES_LIMIT: usize = 100_000;
 
 fn decode_document(kind: &str, content: &str) -> Result<Vec<u8>, String> {
     match kind {
         "json" => {
             if content.len() > PROJECT_LIMIT {
-                return Err("Файл превышает 100 МБ".into());
+                return Err("Файл превышает 200 МиБ".into());
             }
             serde_json::from_str::<serde_json::Value>(content)
                 .map_err(|e| format!("Некорректный JSON: {e}"))?;

@@ -1,3 +1,6 @@
+import {physicalRulesFor} from './physical-rules.js';
+import {makeFormulaEvaluator} from './generation-formulas.js';
+
 class Heap {
   values=[];
   less(a,b) {return a.height<b.height || (a.height===b.height && a.id<b.id);}
@@ -49,17 +52,25 @@ export function hydrology(grid,elevation,runoffMm) {
   }
   return {downstream,spillElevation,lakeDepth,discharge,catchmentKm2,basin,order:Int32Array.from(order),inputM3s,outputM3s};
 }
-export function erode(grid,elevation,water,resistance) {
+export function erode(grid,elevation,water,resistance,config={}) {
   if(resistance && (resistance.length!==grid.size || resistance.some(x=>!Number.isFinite(x) || x<0 || x>1)))throw new Error('Некорректная устойчивость пород');
+  const rules=physicalRulesFor(config,'erosion');
+  const formulas=makeFormulaEvaluator(config,config.seed),incisionFormula=formulas.has('erosion.incision');
   const delta=new Float64Array(grid.size);
   for(let i=0;i<grid.size;i++) {
     const j=water.downstream[i];
     if(j<0 || elevation[i]<=0 || water.lakeDepth[i]>1)continue;
     const slope=Math.max(0,elevation[i]-elevation[j])/Math.max(grid.distance(i,j)*1000,1);
-    const cut=Math.min(55,0.22*Math.sqrt(water.discharge[i])*Math.sqrt(slope))*(1-0.8*(resistance?.[i]??0));
+    const rockResistance=resistance?.[i]??0;
+    const builtin=Math.min(rules.incisionMaximum,rules.incisionFactor*Math.sqrt(water.discharge[i])*Math.sqrt(slope))*(1-rules.resistanceEffect*rockResistance);
+    let cut=builtin;
+    if(incisionFormula) {
+      const p=grid.point(i);
+      cut=formulas.evaluate('erosion.incision',{base:builtin,dischargeM3s:water.discharge[i],slope,resistance:rockResistance,elevationM:elevation[i],latitudeDeg:Math.asin(p[1])*180/Math.PI,longitudeDeg:Math.atan2(p[2],p[0])*180/Math.PI,isOcean:0,season:-1,x:p[0],y:p[1],z:p[2]},builtin,'Речной врез');
+    }
     delta[i]-=cut;
     // Deposit a fraction on low-gradient reaches; the remainder leaves the surface model.
-    if(elevation[j]>0 && slope<0.006) delta[j]+=cut*0.35*grid.areaKm2[i]/grid.areaKm2[j];
+    if(elevation[j]>0 && slope<rules.depositionSlope) delta[j]+=cut*rules.depositionFraction*grid.areaKm2[i]/grid.areaKm2[j];
   }
   for(let i=0;i<grid.size;i++) elevation[i]+=delta[i];
 }

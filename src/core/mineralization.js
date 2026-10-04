@@ -1,6 +1,8 @@
 import {clamp,normalize,dot,cross} from './grid.js';
 import {random,hashSeed,fbm} from './random.js';
 import {pointDistance,arcDistance,interpolateArc} from './spatial.js';
+import {resolveAtlasRules} from './atlas-rules.js';
+import {makeFormulaEvaluator} from './generation-formulas.js';
 
 export function mineralizationPattern(key) {
   if(['hydrothermal','epithermal','orogenicFluid','metamorphicCarbon','iron'].includes(key))return 'structural';
@@ -9,12 +11,12 @@ export function mineralizationPattern(key) {
   return 'basin';
 }
 export function buildMineralization(grid,geology,atlas,seed) {
-  const features=[],rng=random(seed+':geological-features');
+  const r=resolveAtlasRules(atlas.generationRules).mineralization,features=[],rng=random(seed+':geological-features');
   // Nearby points form spherical fault arcs. No line is drawn through the map seam in pixel space.
   if(geology.boundary)for(let i=0;i<grid.size;i++) {
     if(!geology.boundary[i])continue;
-    for(const j of grid.neighbors(i))if(j>i && geology.boundary[j] && grid.distance(i,j)<1800) {
-      features.push({kind:'structural',a:grid.point(i),b:grid.point(j),widthKm:35+45*rng()});
+    for(const j of grid.neighbors(i))if(j>i && geology.boundary[j] && grid.distance(i,j)<r.structuralMaxEdgeKm) {
+      features.push({kind:'structural',a:grid.point(i),b:grid.point(j),widthKm:r.structuralWidthMinKm+r.structuralWidthRangeKm*rng()});
     }
   }
   const magma=geology.magmaticMemory??geology.volcanism;
@@ -30,8 +32,8 @@ export function buildMineralization(grid,geology,atlas,seed) {
       const tangent=east.map((v,k)=>v*Math.cos(bearing)+north[k]*Math.sin(bearing));
       return center.map((v,k)=>v*Math.cos(angle)+tangent[k]*Math.sin(angle));
     };
-    if(value>0.15 && peak(magma,value))features.push({kind:'intrusion',center:makeCenter(),widthKm:65+105*rng()});
-    if(depth>400 && peak(basin,depth))features.push({kind:'basin',center:makeCenter(),widthKm:180+220*rng(),aspect:1.5+1.5*rng(),bearing:rng()*Math.PI*2});
+    if(value>r.intrusionThreshold && peak(magma,value))features.push({kind:'intrusion',center:makeCenter(),widthKm:r.intrusionWidthMinKm+r.intrusionWidthRangeKm*rng()});
+    if(depth>r.basinThresholdM && peak(basin,depth))features.push({kind:'basin',center:makeCenter(),widthKm:r.basinWidthMinKm+r.basinWidthRangeKm*rng(),aspect:r.basinAspectMin+r.basinAspectRange*rng(),bearing:rng()*Math.PI*2});
   }
   return {version:1,seed,features};
 }
@@ -57,7 +59,8 @@ function lensDistance(p,f,radiusKm) {
   return Math.hypot(u/f.widthKm,v/(f.widthKm/f.aspect));
 }
 export function makeProspectivitySampler(grid,geology,atlas,seed=atlas.mineralization?.seed??'world') {
-  const metadata=atlas.mineralization??{seed,features:[]},near=featureIndex(metadata.features,grid.radiusKm),noiseSeed=hashSeed(metadata.seed+':ore-belts');
+  const formulas=makeFormulaEvaluator(atlas.generationRules??{},seed),customFormation=formulas.has('mineralization.formation');
+  const r=resolveAtlasRules(atlas.generationRules).mineralization,metadata=atlas.mineralization??{seed,features:[]},near=featureIndex(metadata.features,grid.radiusKm),noiseSeed=hashSeed(metadata.seed+':ore-belts');
   function detail(p) {
     const influences={structural:0,intrusion:0,basin:0,weathering:0};
     for(const f of near(p)) {
@@ -69,9 +72,9 @@ export function makeProspectivitySampler(grid,geology,atlas,seed=atlas.mineraliz
     const ridge=Math.exp(-(((fbm(...warp,noiseSeed+47,48,3)-.5)/.065)**2));
     const patches=clamp((fbm(...warp,noiseSeed+137,65,3)-.25)*2,0,1);
     return {
-      structural:clamp(influences.structural*.8+ridge*.6,0,1),
-      intrusion:clamp(influences.intrusion*.85+patches*.45,0,1),
-      basin:clamp(influences.basin*.65+patches*.65,0,1),
+      structural:clamp(influences.structural*r.beltStructuralFeature+ridge*r.beltStructuralRidge,0,1),
+      intrusion:clamp(influences.intrusion*r.beltIntrusionFeature+patches*r.beltIntrusionPatch,0,1),
+      basin:clamp(influences.basin*r.beltBasinFeature+patches*r.beltBasinPatch,0,1),
       weathering:patches
     };
   }
@@ -81,7 +84,8 @@ export function makeProspectivitySampler(grid,geology,atlas,seed=atlas.mineraliz
     const env=atlas.environments[rule.key],environmentScore=env?clamp(grid.sampleField(env,p),0,1):0;
     if(environmentScore<rule.threshold)return {cell,environmentScore,beltStrength:0,formationScore:0};
     const beltStrength=(patternValues??detail(p))[mineralizationPattern(rule.key)];
-    const formationScore=clamp(environmentScore*(.4+1.2*beltStrength),0,1);
+    const builtin=clamp(environmentScore*(r.formationBase+r.formationBelt*beltStrength),0,1);
+    const formationScore=customFormation?formulas.evaluate('mineralization.formation',{latitudeDeg:Math.asin(p[1])*180/Math.PI,longitudeDeg:Math.atan2(p[2],p[0])*180/Math.PI,elevationM:grid.sampleField(geology.elevation,p),isOcean:0,season:-1,x:p[0],y:p[1],z:p[2],environmentScore,beltStrength,threshold:rule.threshold},builtin,`среда ${rule.key}`):builtin;
     return {cell,environmentScore,beltStrength,formationScore};
   }
   function potential(rules,p) {

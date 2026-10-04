@@ -1,0 +1,18 @@
+{
+  "format": "worldgen-generation-rules",
+  "version": 2,
+  "rules": {
+    "formulas": {
+      "version": 1,
+      "expressions": {
+        "climate.temperature": "base + 1.5 * sin(latitudeDeg * pi / 180)",
+        "climate.condensation": "clamp(base * (1 + 0.15 * noise(x, y, z, 8)), 0, 1)",
+        "climate.runoff": "clamp(precipitationMm - evaporationMm * 0.8, 0, precipitationMm)",
+        "soils.fertility": "clamp(base + 0.12 * moisture - 0.08 * salinity, 0, 1)",
+        "hazards.landslide": "clamp(base + slope * 8, 0, 1)",
+        "mineralization.formation": "clamp(environmentScore * (0.3 + 0.7 * beltStrength), 0, 1)",
+        "resources.access": "clamp(depthM / 2200 + slope * 4, 0, 1)"
+      }
+    }
+  }
+}

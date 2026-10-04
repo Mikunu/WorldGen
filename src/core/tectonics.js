@@ -1,12 +1,16 @@
 import {random, hashSeed, fbm} from './random.js';
 import {dot, cross, normalize, rotate, clamp} from './grid.js';
+import {physicalRulesFor} from './physical-rules.js';
+import {makeFormulaEvaluator} from './generation-formulas.js';
 
 export function tectonics(grid, config, progress) {
+  const rules=physicalRulesFor(config,'tectonics');
+  const formulas=makeFormulaEvaluator(config,config.seed),elevationFormula=formulas.has('tectonics.elevation');
   const rng = random(config.seed + ':tectonics'), noiseSeed = hashSeed(config.seed + ':crust');
   const plates = Array.from({length:config.plateCount}, (_,id) => {
     const y = 1 - 2*(id+0.5)/config.plateCount, angle=id*2.399963229728653+rng()*0.6;
     return {id, center:normalize([Math.sqrt(1-y*y)*Math.cos(angle),y,Math.sqrt(1-y*y)*Math.sin(angle)]),
-      omega:normalize([rng()-0.5,rng()-0.5,rng()-0.5]).map(v=>v*(0.0007+rng()*0.0008)), continentalBias:rng()*0.3-0.15};
+      omega:normalize([rng()-0.5,rng()-0.5,rng()-0.5]).map(v=>v*(rules.plateVelocityBase+rng()*rules.plateVelocityVariation)), continentalBias:rng()*(rules.continentalBiasRange*2)-rules.continentalBiasRange};
   });
   let plateId = new Uint16Array(grid.size), crust = new Float64Array(grid.size), uplift = new Float64Array(grid.size);
   let ageMa = new Float64Array(grid.size);
@@ -21,8 +25,8 @@ export function tectonics(grid, config, progress) {
   }
   assign();
   for (let i=0;i<grid.size;i++) {
-    const p=grid.point(i), value=fbm(...p,noiseSeed,2.4,4)+plates[plateId[i]].continentalBias;
-    crust[i]=clamp((value-0.39)*4,0,1);
+    const p=grid.point(i), value=fbm(...p,noiseSeed,rules.crustNoiseScale,rules.crustNoiseOctaves)+plates[plateId[i]].continentalBias;
+    crust[i]=clamp((value-rules.crustThreshold)*rules.crustContrast,0,1);
     ageMa[i]=30+500*fbm(...p,noiseSeed+109,3,3);
   }
   const snapshots=[];
@@ -33,10 +37,10 @@ export function tectonics(grid, config, progress) {
     plateId=new Uint16Array(grid.size); assign();
     for(let i=0;i<grid.size;i++) {
       const p=grid.point(i), plate=plates[plateId[i]], origin=rotate(p,plate.omega,-config.epochMa),source=grid.sample(origin);
-      nextCrust[i]=grid.sampleField(crust,origin); nextUplift[i]=grid.sampleField(uplift,origin)*0.987; nextAge[i]=grid.sampleField(ageMa,origin)+config.epochMa;
-      nextCompression[i]=grid.sampleField(compressionMemory,origin)*0.99;
-      nextExtension[i]=grid.sampleField(extensionMemory,origin)*0.99;
-      nextMagmatic[i]=grid.sampleField(magmaticMemory,origin)*0.997;
+      nextCrust[i]=grid.sampleField(crust,origin); nextUplift[i]=grid.sampleField(uplift,origin)*rules.upliftRetention; nextAge[i]=grid.sampleField(ageMa,origin)+config.epochMa;
+      nextCompression[i]=grid.sampleField(compressionMemory,origin)*rules.compressionMemoryRetention;
+      nextExtension[i]=grid.sampleField(extensionMemory,origin)*rules.extensionMemoryRetention;
+      nextMagmatic[i]=grid.sampleField(magmaticMemory,origin)*rules.magmaticMemoryRetention;
       boundary[i]=0; stress[i]=0; volcanism[i]=0;
       let strongest=0;
       for(const j of grid.neighbors(i)) {
@@ -47,24 +51,24 @@ export function tectonics(grid, config, progress) {
         if(Math.abs(convergence)>Math.abs(strongest)) strongest=convergence;
       }
       stress[i]=strongest;
-      if(Math.abs(strongest)>0.00012) {
+      if(Math.abs(strongest)>rules.convergenceThreshold) {
         boundary[i]=strongest>0 ? 1 : -1;
-        const continental=nextCrust[i]>0.52;
-        nextUplift[i]+=strongest*config.epochMa*(strongest>0 ? (continental?145000:85000) : (continental?60000:18000));
+        const continental=nextCrust[i]>rules.continentalCrustThreshold;
+        nextUplift[i]+=strongest*config.epochMa*(strongest>0 ? (continental?rules.continentalUplift:rules.oceanicUplift) : (continental?rules.continentalExtension:rules.oceanicExtension));
         if(strongest>0 && nextCrust[i]<0.85) volcanism[i]=clamp(strongest/0.002,0,1);
-        nextCompression[i]+=Math.max(0,strongest)*config.epochMa*145000;
-        nextExtension[i]+=Math.max(0,-strongest)*config.epochMa*60000;
-        nextMagmatic[i]=clamp(nextMagmatic[i]+volcanism[i]*config.epochMa*0.035,0,1);
+        nextCompression[i]+=Math.max(0,strongest)*config.epochMa*rules.compressionMemoryGain;
+        nextExtension[i]+=Math.max(0,-strongest)*config.epochMa*rules.extensionMemoryGain;
+        nextMagmatic[i]=clamp(nextMagmatic[i]+volcanism[i]*config.epochMa*rules.magmaticMemoryGain,0,1);
         if(strongest<0 && !continental) nextAge[i]=Math.min(nextAge[i],config.epochMa*2);
       } else if(grid.neighbors(i).some(j=>plateId[j]!==plateId[i])) boundary[i]=2;
-      nextUplift[i]=clamp(nextUplift[i],-2200,8500);
+      nextUplift[i]=clamp(nextUplift[i],rules.upliftMin,rules.upliftMax);
       // Newly assigned cells retain advected material: crust is not redrawn from plate identity.
       if(oldIds[source]!==plateId[i]) nextCrust[i]=0.95*nextCrust[i]+0.05*crust[i];
     }
     // Relax short-wavelength deformation while keeping old mountain belts.
     for(let i=0;i<grid.size;i++) {
       const ns=grid.neighbors(i), mean=ns.reduce((a,j)=>a+nextUplift[j],0)/ns.length;
-      uplift[i]=nextUplift[i]*0.72+mean*0.28;
+      uplift[i]=nextUplift[i]*rules.smoothingSelf+mean*(1-rules.smoothingSelf);
     }
     crust=nextCrust; ageMa=nextAge;compressionMemory=nextCompression;extensionMemory=nextExtension;magmaticMemory=nextMagmatic;
     if(step===0 || step===config.epochs-1 || (step+1)%8===0) snapshots.push({elapsedMa:(step+1)*config.epochMa,plateCenters:plates.map(p=>[...p.center])});
@@ -73,8 +77,12 @@ export function tectonics(grid, config, progress) {
   const elevation=new Float64Array(grid.size);
   for(let i=0;i<grid.size;i++) {
     const p=grid.point(i);
-    const base=-4600+crust[i]*6500;
-    elevation[i]=base+uplift[i]+(fbm(...p,noiseSeed+717,12,3)-0.5)*850;
+    const base=-4600+crust[i]*6500,noise=fbm(...p,noiseSeed+717,rules.elevationNoiseScale,rules.elevationNoiseOctaves);
+    const builtin=base+uplift[i]+(noise-0.5)*rules.elevationNoiseAmplitude;
+    elevation[i]=elevationFormula
+      // Sea level is resolved after this stage, so ocean membership is not known yet.
+      ? formulas.evaluate('tectonics.elevation',{base:builtin,crust:crust[i],upliftM:uplift[i],noise,ageMa:ageMa[i],latitudeDeg:Math.asin(p[1])*180/Math.PI,longitudeDeg:Math.atan2(p[2],p[0])*180/Math.PI,elevationM:builtin,isOcean:0,season:-1,x:p[0],y:p[1],z:p[2]},builtin,'Тектоническая высота')
+      : builtin;
   }
   // Sea level is chosen by area, not by number of distorted projection pixels.
   const sorted=Array.from(elevation, (height,i)=>({height,area:grid.areaKm2[i]})).sort((a,b)=>a.height-b.height);

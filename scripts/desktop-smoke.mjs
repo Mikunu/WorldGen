@@ -30,8 +30,8 @@ try {
   await evaluate("document.querySelector('[data-layer=potential]').click()");
   await waitFor("!document.querySelector('#layer-note').textContent.includes('Расчёт') && !document.querySelector('#layer-note').textContent.includes('Расчет')");
   await new Promise(r=>setTimeout(r,4000));
-  report.potential=await evaluate("({note:document.querySelector('#layer-note').textContent,layer:document.querySelector('[data-layer=potential]').getAttribute('aria-pressed')})");
-  assert.equal(report.potential.layer,'true');assert.doesNotMatch(report.potential.note,/ошибка/i);
+  report.potential=await evaluate("({note:document.querySelector('#layer-note').textContent,layer:document.querySelector('[data-layer=potential]').checked})");
+  assert.equal(report.potential.layer,true);assert.doesNotMatch(report.potential.note,/ошибка/i);
   await evaluate("document.querySelector('[data-layer=resources]').click()");
   // The rules operation exercises the real editor worker and preview/apply/undo path.
   await evaluate("document.querySelector('#rule-density').value='1.5'; document.querySelector('#save-rules').click()");
@@ -48,7 +48,7 @@ try {
   await evaluate("document.querySelector('#version-name').value='Tauri smoke test';document.querySelector('#save-version').click()");
   await waitFor("document.querySelector('#saved-versions').textContent.includes('Tauri smoke test') && !document.querySelector('#save-version').disabled");
   report.versions='IndexedDB snapshot saved';
-  await evaluate("document.querySelector('[data-layer=elevation]').click();window.scrollTo(0,0)");
+  await evaluate("for(const layer of document.querySelectorAll('[data-layer]'))if(layer.checked !== (layer.dataset.layer==='elevation'))layer.click();window.scrollTo(0,0)");
   await send('Page.enable');
   const {data}=await send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});
   const output=fileURLToPath(new URL('../output/',import.meta.url));

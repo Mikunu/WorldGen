@@ -21,6 +21,8 @@ jobs:
           package-manager-cache: false
       - name: Prepare frontend
         run: node scripts/build-frontend.mjs
+      - name: Check version metadata
+        run: node scripts/set-version.mjs --check
       - name: JavaScript tests
         run: node --test tests/*.test.mjs
       - name: Rust tests

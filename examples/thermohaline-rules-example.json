@@ -1,0 +1,36 @@
+{
+  "format": "worldgen-generation-rules",
+  "version": 2,
+  "rules": {
+    "ocean": {
+      "enabled": true,
+      "thermodynamicsEnabled": true,
+      "referenceSalinityPsu": 35,
+      "freshwaterSalinityRangePsu": 3,
+      "surfaceLayerDepthM": 200,
+      "deepMinimumDepthM": 700,
+      "deepTemperatureOffsetC": 10,
+      "deepSalinityOffsetPsu": 0.2,
+      "overturningStrengthMps": 0.00002,
+      "densityContrastScaleKgM3": 1,
+      "maxDeepCurrentMps": 0.2,
+      "thermodynamicSteps": 12,
+      "verticalExchangeCourant": 0.15,
+      "deepLateralMixing": 0.02,
+      "surfaceFeedback": 0.6
+    },
+    "formulas": {
+      "version": 1,
+      "expressions": {
+        "ocean.salinity": "clamp(base + 0.1 * cos(latitudeDeg * pi / 180), 0, 50)",
+        "ocean.density": "base",
+        "ocean.deepTemperature": "clamp(base - 1, -10, 60)",
+        "ocean.deepSalinity": "clamp(base + 0.1, 0, 50)",
+        "ocean.deepDensity": "base",
+        "ocean.deepEast": "base",
+        "ocean.deepNorth": "base",
+        "ocean.vertical": "base * 0.8"
+      }
+    }
+  }
+}

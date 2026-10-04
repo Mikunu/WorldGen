@@ -1,4 +1,4 @@
-import {initializeEditor,createHistory,serializeProject,rulePresets,defaultRules} from './core/editor.js';
+import {initializeEditor,createHistory,serializeProject,rulePresets,defaultRules,MAX_PROJECT_BYTES} from './core/editor.js';
 import {depositModels} from './core/deposit-models.js';
 import {minerals} from './core/geology-catalog.js';
 import {makeGrid,normalize,cross} from './core/grid.js';
@@ -21,11 +21,13 @@ export function mountEditor(api) {
     message(toolText[tool]);
   }
   function controls() {
-    const pending=!!(job||preview);document.body.classList.toggle('edit-pending',pending);$('edit-busy').hidden=!job;
+    const pending=!!(job||preview)||api.generationBusy?.();document.body.classList.toggle('edit-pending',pending);$('edit-busy').hidden=!job;
     $('undo-edit').disabled=pending||!history.canUndo;$('redo-edit').disabled=pending||!history.canRedo;
     $('save-project').disabled=!world()||pending;$('load-project').disabled=pending;$('generate').disabled=pending;$('random-seed').disabled=pending;
     $('export-json').disabled=!world()||pending;$('export-png').disabled=!world()||pending;
     $('save-version').disabled=!world()||pending;$('edit-preview').hidden=!preview;
+    api.refreshNavigation?.();
+    api.rulesBusy?.(pending);
   }
   function fillRules(r=defaultRules) {
     for(const [key,id] of Object.entries(ruleFields))$(id).value=r[key];
@@ -38,8 +40,8 @@ export function mountEditor(api) {
     sync();api.refresh();controls();
   }
   function request(operation) {
-    if(!world()||job||preview)return;
-    lastOperation=operation;job=new Worker('/src/editor-worker.js',{type:'module'});const current=world(),active=job;
+    if(!world()||job||preview||api.generationBusy?.())return;
+    api.closeRules?.();lastOperation=operation;job=new Worker('/src/editor-worker.js',{type:'module'});const current=world(),active=job;
     message('Подготовка предпросмотра…');controls();
     const fail=text=>{if(job!==active)return;job.terminate();job=null;lastOperation=null;message(text,true);controls();api.render();};
     job.onerror=e=>fail(`Ошибка редактора: ${e.message}`);
@@ -65,6 +67,7 @@ export function mountEditor(api) {
     const w=world();if(!w)return;initializeEditor(w);
     $('lock-terrain').checked=w.editor.locks.terrain;$('lock-resources').checked=w.editor.locks.resources;
     fillRules(w.editor.rules);const a=w.editor.appearance;$('map-theme').value=a.theme;$('marker-scale').value=a.markerScale;$('marker-opacity').value=a.opacity;$('show-labels').checked=a.labels;
+    api.syncGenerationRules?.(w.editor.generationRules??w.config.generationRules);
     $('locked-areas').replaceChildren();for(const lock of w.editor.locks.areas){const row=document.createElement('div');row.className='editor-row';const text=document.createElement('span');text.textContent=`${lock.name} · ${Math.round(lock.area.radiusKm)} км · ${[lock.terrain?'рельеф / осадки':'',lock.resources?'ресурсы':''].filter(Boolean).join(', ')}`;const button=document.createElement('button');button.textContent='Снять закрепление';button.onclick=()=>request({type:'locks',removeId:lock.id,label:'Снять закрепление области'});row.append(text,button);$('locked-areas').append(row);}
     const chosen=$('note-list').value;$('note-list').replaceChildren(new Option('Новая подпись',''));
     for(const note of w.editor.annotations)$('note-list').append(new Option(note.name,note.id));$('note-list').value=chosen;
@@ -99,7 +102,7 @@ export function mountEditor(api) {
     }
   }
   canvas.addEventListener('pointerdown',event=>{
-    if(!world()||job||preview||event.button!==0)return;
+    if(!world()||job||preview||event.button!==0||api.shouldPan?.(event))return;
     if(tool==='area'||tool==='brush'){event.preventDefault();drag={path:[point(event)],pointerId:event.pointerId};canvas.setPointerCapture(event.pointerId);api.render();}
   });
   canvas.addEventListener('pointermove',event=>{
@@ -110,12 +113,12 @@ export function mountEditor(api) {
   });
   canvas.addEventListener('pointerup',finishDrag);canvas.addEventListener('pointercancel',()=>{drag=null;api.render();});
   canvas.addEventListener('click',event=>{
-    if(!world())return;if(job||preview){event.stopImmediatePropagation();return;}
+    if(!world())return;if(job||preview||api.shouldPan?.(event)){event.stopImmediatePropagation();return;}
     if(tool==='select') {
       // Marker picking follows their visible positions and chosen filters.
       const rect=canvas.getBoundingClientRect(),d=pickDeposit(world().atlas.deposits,(event.clientX-rect.left)/rect.width,(event.clientY-rect.top)/rect.height,rect.width,rect.height,
         api.depositFilter,Math.max(10,10*(world().editor.appearance.markerScale??1)));
-      if(api.getLayer()==='resources'&&d){event.stopImmediatePropagation();api.inspect(d.cell,d);}
+      if((api.isLayerEnabled?.('resources')??api.getLayer()==='resources')&&d){event.stopImmediatePropagation();api.inspect(d.cell,d);}
       return;
     }
     event.stopImmediatePropagation();const p=point(event);
@@ -169,18 +172,18 @@ export function mountEditor(api) {
   $('appearance-form').onsubmit=e=>{e.preventDefault();request({type:'appearance',theme:$('map-theme').value,values:{labels:$('show-labels').checked,markerScale:num('marker-scale'),opacity:num('marker-opacity')},label:'Оформление карты'});};
   $('save-project').onclick=()=>download(serializeProject(world(),api.getView()),`worldgen-${world().config.seed.replace(/[^\p{L}\p{N}_-]/gu,'_')}-project.json`);
   $('load-project').onclick=async()=>{if(!isDesktop()){$('project-file').click();return;}try{const text=await openJson();if(text!==null)restoreText(text);}catch(e){message(e.message??e,true);}};
-  $('project-file').onchange=async()=>{try{const file=$('project-file').files[0];if(!file)return;if(file.size>100*1024*1024)throw new Error('Проект превышает 100 МБ');restoreText(await file.text());}catch(e){message(e.message,true);}finally{$('project-file').value='';}};
+  $('project-file').onchange=async()=>{try{const file=$('project-file').files[0];if(!file)return;if(file.size>MAX_PROJECT_BYTES)throw new Error('Проект превышает 200 МиБ');restoreText(await file.text());}catch(e){message(e.message,true);}finally{$('project-file').value='';}};
   // IndexedDB can hold full world snapshots without localStorage's small size limit.
   const dbPromise=new Promise((resolve,reject)=>{const req=indexedDB.open('worldgen-editor',1);req.onupgradeneeded=()=>req.result.createObjectStore('versions',{keyPath:'id'});req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error);});
   async function storage(action,value) {const db=await dbPromise;return new Promise((resolve,reject)=>{const tx=db.transaction('versions',action==='getAll'?'readonly':'readwrite'),store=tx.objectStore('versions'),r=store[action](value);tx.oncomplete=()=>resolve(r.result);tx.onerror=()=>reject(tx.error);tx.onabort=()=>reject(tx.error??new Error('Сохранение версии прервано'));});}
   async function versions() {try{const entries=await storage('getAll');$('saved-versions').replaceChildren();for(const v of entries.sort((a,b)=>b.created-a.created)){const row=document.createElement('div');row.className='editor-row';const label=document.createElement('span');label.textContent=`${v.name} · ${new Date(v.created).toLocaleString('ru-RU')}`;const load=document.createElement('button'),remove=document.createElement('button');load.textContent='Открыть';remove.textContent='Удалить';load.onclick=()=>restoreText(v.text);remove.onclick=async()=>{try{await storage('delete',v.id);await versions();}catch(e){message(e.message,true);}};row.append(label,load,remove);$('saved-versions').append(row);}}catch(e){message(`Версии браузера недоступны: ${e.message}. Используйте файл проекта.`,true);}}
   $('save-version').onclick=async()=>{if(!world()||job||preview)return;try{$('save-version').disabled=true;await storage('put',{id:crypto.randomUUID(),name:$('version-name').value||`${world().config.seed} · правка ${world().editor.revision}`,created:Date.now(),text:serializeProject(world(),api.getView())});await versions();message('Версия сохранена на этом устройстве.');}catch(e){message(`Не удалось сохранить версию: ${e.message}. Сохраните файл проекта.`,true);}finally{controls();}};
-  dbPromise.catch(()=>{});versions();if(isDesktop())$('save-version').textContent='Сохранить версию на устройстве';
+  dbPromise.catch(()=>{});versions();
   function ring(ctx,a,color,dashed=true) {
     const center=a.center,ref=Math.abs(center[1])>.99?[0,0,1]:[0,1,0],east=normalize(cross(center,ref)),north=normalize(cross(east,center)),angle=a.radiusKm/display().grid.radiusKm;
-    ctx.strokeStyle=color;ctx.lineWidth=2;ctx.setLineDash(dashed?[7,5]:[]);ctx.beginPath();let previous=null;
+    const screenScale=api.screenScale?.()??1;ctx.strokeStyle=color;ctx.lineWidth=2*screenScale;ctx.setLineDash(dashed?[7*screenScale,5*screenScale]:[]);ctx.beginPath();let previous=null;
     for(let k=0;k<=160;k++){const t=k/160*2*Math.PI,p=center.map((v,j)=>v*Math.cos(angle)+(east[j]*Math.cos(t)+north[j]*Math.sin(t))*Math.sin(angle)),m=mapPoint(p),x=m.x*canvas.width,y=m.y*canvas.height;if(previous&&Math.abs(x-previous.x)<canvas.width/2)ctx.lineTo(x,y);else ctx.moveTo(x,y);previous={x,y};}ctx.stroke();ctx.setLineDash([]);
   }
   function overlay() {if(!world())return;const ctx=canvas.getContext('2d');ctx.save();for(const lock of display().editor?.locks.areas??[])ring(ctx,lock.area,'#f6df9c',false);if(area)ring(ctx,area,'#ffffff');if(drag){if(tool==='area')ring(ctx,{center:drag.path[0],radiusKm:drag.end?pointDistance(drag.path[0],drag.end,world().grid.radiusKm):num('edit-area-radius')},'#ffffff');else{for(const p of drag.path)ring(ctx,{center:p,radiusKm:num('edit-area-radius')},'#fff8',false);}}ctx.restore();}
-  return {displayWorld:display,overlay,selectionChanged,sync,busy:()=>!!(job||preview),reset(){job?.terminate();job=null;preview=null;area=null;drag=null;history.clear();lastOperation=null;$('compare-original').checked=false;$('edit-area-info').textContent='Область не выбрана: правила применяются ко всему миру.';sync();controls();message(toolText[tool]);}};
+  return {displayWorld:display,overlay,selectionChanged,sync,controls,busy:()=>!!(job||preview),saveGenerationRules(rules){request({type:'generationRules',rules,label:'Правила следующего мира — текущая карта сохраняется'});},reset(){job?.terminate();job=null;preview=null;area=null;drag=null;history.clear();lastOperation=null;$('compare-original').checked=false;$('edit-area-info').textContent='Область не выбрана: правила применяются ко всему миру.';sync();controls();message(toolText[tool]);}};
 }

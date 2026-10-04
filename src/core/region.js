@@ -2,12 +2,16 @@ import {makeGrid,normalize,cross,dot,clamp} from './grid.js';
 import {hashSeed,fbm} from './random.js';
 import {rocks} from './geology-catalog.js';
 import {geologicalColumn} from './geological-atlas.js';
+import {physicalRulesFor} from './physical-rules.js';
+import {makeFormulaEvaluator} from './generation-formulas.js';
 
 // Refinement inherits the saved planet's geology and resource bodies.
 export function refineRegion(world,cell,{size=65,spanKm=700,centerPosition=null}={}) {
   if(!Number.isInteger(cell) || cell<0 || cell>=world.grid.size)throw new RangeError('Некорректный центр региона');
   if(!Number.isInteger(size) || size<15 || size>129 || size%2===0)throw new RangeError('Размер региональной сетки: нечётное число от 15 до 129');
   if(!Number.isFinite(spanKm) || spanKm<100 || spanKm>2500)throw new RangeError('Протяжённость региона: 100–2500 км');
+  const rules=physicalRulesFor(world.config,'region'),rockCatalog=world.catalogs?.rocks??rocks;
+  const formulas=makeFormulaEvaluator(world.config,world.config.seed),elevationFormula=formulas.has('region.elevation');
   const grid=makeGrid(world.grid.width,world.grid.height,world.grid.radiusKm);
   if(centerPosition && (!Array.isArray(centerPosition) || centerPosition.length!==3 || centerPosition.some(v=>!Number.isFinite(v)) || Math.abs(Math.hypot(...centerPosition)-1)>1e-10 || grid.sample(centerPosition)!==cell))throw new RangeError('Некорректный центр региона на сфере');
   const center=centerPosition??grid.point(cell),reference=Math.abs(center[1])>.999999999?[0,0,1]:[0,1,0];
@@ -20,14 +24,18 @@ export function refineRegion(world,cell,{size=65,spanKm=700,centerPosition=null}
     const p=center.map((v,k)=>v*Math.cos(angle)+tangent[k]*Math.sin(angle)),host=grid.sample(p);
     parentCell[i]=host;surfaceRock[i]=world.atlas.surfaceRock[host];provinceId[i]=world.atlas.provinceId[host];
     latitude[i]=Math.asin(clamp(p[1],-1,1))*180/Math.PI;longitude[i]=Math.atan2(p[2],p[0])*180/Math.PI;
-    if(!hostNoise.has(host))hostNoise.set(host,fbm(...grid.point(host),noiseSeed,150,3));
-    const detail=fbm(...p,noiseSeed,150,3)-hostNoise.get(host),base=grid.sampleField(world.geology.elevation,p);
-    const refined=base+detail*180*(0.4+rocks[surfaceRock[i]].resistance*0.6);
+    if(!hostNoise.has(host))hostNoise.set(host,fbm(...grid.point(host),noiseSeed,rules.detailFrequency,rules.detailOctaves));
+    const detail=fbm(...p,noiseSeed,rules.detailFrequency,rules.detailOctaves)-hostNoise.get(host),base=grid.sampleField(world.geology.elevation,p);
+    const detailM=detail*rules.detailAmplitude*(rules.rockDetailBase+rockCatalog[surfaceRock[i]].resistance*rules.rockResistanceFactor),builtin=base+detailM;
+    const refined=elevationFormula
+      ? formulas.evaluate('region.elevation',{base:builtin,baseElevationM:base,detailM,elevationM:builtin,latitudeDeg:latitude[i],longitudeDeg:longitude[i],isOcean:world.geology.elevation[host]<=0?1:0,season:-1,x:p[0],y:p[1],z:p[2]},builtin,'Региональная высота')
+      : builtin;
     elevation[i]=world.geology.elevation[host]>0?Math.max(0.01,refined):Math.min(0,refined);
-    const column=geologicalColumn(world.atlas,host),factor=1+detail*0.18;let upperThickness=0;
+    const column=geologicalColumn(world.atlas,host),factor=1+detail*rules.thicknessVariation,columnDepth=column.at(-1).bottomM,upperDepth=column[2].bottomM;
+    const boundedFactor=Math.min(factor,(columnDepth-.01)/upperDepth);let upperThickness=0;
     for(let k=0;k<4;k++) {
       const slot=i*4+k;layerRock[slot]=column[k].rock;layerAgeMa[slot]=column[k].ageMa;
-      layerThicknessM[slot]=k<3?(column[k].bottomM-column[k].topM)*factor:12000-upperThickness;
+      layerThicknessM[slot]=k<3?(column[k].bottomM-column[k].topM)*boundedFactor:columnDepth-upperThickness;
       if(k<3)upperThickness+=layerThicknessM[slot];
     }
   }

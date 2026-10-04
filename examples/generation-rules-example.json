@@ -1,0 +1,12 @@
+{
+  "format": "worldgen-generation-rules",
+  "version": 1,
+  "rules": {
+    "climate": {"equatorialTemperature": 35, "latitudeCooling": 40},
+    "biomes": {"desertPrecipitation": 350},
+    "depositModels": {
+      "gold-vein": {"frequency": 2, "threshold": 0.2},
+      "coal-basin": {"frequency": 2.5}
+    }
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "format": "worldgen-generation-rules",
+  "version": 2,
+  "rules": {
+    "ocean": {
+      "enabled": true,
+      "windResponseMps": 0.4,
+      "airCoupling": 0.45,
+      "coastReachCells": 6
+    },
+    "formulas": {
+      "version": 1,
+      "expressions": {
+        "ocean.east": "base * 0.85",
+        "ocean.north": "base",
+        "ocean.temperature": "clamp(base + 1, -2, 38)",
+        "ocean.coupling": "base * 0.8"
+      }
+    }
+  }
+}
